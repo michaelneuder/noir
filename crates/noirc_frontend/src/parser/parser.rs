@@ -268,8 +268,7 @@ fn global_type_annotation() -> impl NoirParser<UnresolvedType> {
             UnresolvedType::Integer(_, sign, size) => {
                 UnresolvedType::Integer(Comptime::Yes(None), sign, size)
             }
-            UnresolvedType::Array(size, elem) 
-                => UnresolvedType::Array(size, elem),
+            UnresolvedType::Array(size, elem) => UnresolvedType::Array(size, elem),
             other => other,
         })
         .or_not()
