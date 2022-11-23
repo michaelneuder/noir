@@ -498,7 +498,7 @@ fn array_type<T>(type_parser: T) -> impl NoirParser<UnresolvedType>
 where
     T: NoirParser<UnresolvedType>,
 {
-    just(Token::LeftBracket) 
+    just(Token::LeftBracket)
         .ignore_then(type_parser)
         .then(fixed_array_size().or_not())
         .then_ignore(just(Token::RightBracket))
