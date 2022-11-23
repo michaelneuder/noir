@@ -257,7 +257,9 @@ fn check_statements_require_semicolon(
     })
 }
 
-/// Parse an optional ': type' and implicitly add a 'comptime' to the type
+/// Parse an optional ': type' and implicitly add a 'comptime' to the type. 
+/// For array types, we do not need to add the 'comptime' attribute, because
+/// they are static.
 fn global_type_annotation() -> impl NoirParser<UnresolvedType> {
     ignore_then_commit(just(Token::Colon), parse_type())
         .map(|r#type| match r#type {
@@ -266,6 +268,8 @@ fn global_type_annotation() -> impl NoirParser<UnresolvedType> {
             UnresolvedType::Integer(_, sign, size) => {
                 UnresolvedType::Integer(Comptime::Yes(None), sign, size)
             }
+            UnresolvedType::Array(size, elem) 
+                => UnresolvedType::Array(size, elem),
             other => other,
         })
         .or_not()
@@ -494,7 +498,7 @@ fn array_type<T>(type_parser: T) -> impl NoirParser<UnresolvedType>
 where
     T: NoirParser<UnresolvedType>,
 {
-    just(Token::LeftBracket)
+    just(Token::LeftBracket)  
         .ignore_then(type_parser)
         .then(fixed_array_size().or_not())
         .then_ignore(just(Token::RightBracket))
