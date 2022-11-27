@@ -71,14 +71,17 @@ fn top_level_statement(
     .recover_via(top_level_statement_recovery())
 }
 
-fn global_declaration() -> impl NoirParser<TopLevelStatement> {
+fn global_declaration<'a, P>(expr_parser: P) -> impl NoirParser<TopLevelStatement> + 'a 
+where
+    P: ExprParser + 'a,
+{
     let p = ignore_then_commit(
         keyword(Keyword::Global).labelled("global"),
         ident().map(Pattern::Identifier),
     );
     let p = then_commit(p, global_type_annotation());
     let p = then_commit_ignore(p, just(Token::Assign));
-    let p = then_commit(p, literal().map_with_span(Expression::new)); // XXX: this should be a literal
+    let p = then_commit(p, expr_parser); 
     p.map(LetStatement::new_let).map(TopLevelStatement::Global)
 }
 
