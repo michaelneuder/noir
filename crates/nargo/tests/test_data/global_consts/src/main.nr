@@ -10,6 +10,14 @@ global N: Field = 5;
 global GlobalC: [Field; 3] = [3, 3, 3];
 global GlobalD: [Field; 5] = [5, 5, 5, 5, 5];
 
+global badGlobal = if M == 32 {
+     constrain 1 == 1;
+};
+
+global badGlobal2 = for i in 0..1 {
+     constrain i == 0;
+};
+
 struct Dummy {
      x: [Field; N],
      y: [Field; foo::MAGIC_NUMBER]

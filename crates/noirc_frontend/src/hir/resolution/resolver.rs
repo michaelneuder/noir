@@ -490,6 +490,11 @@ impl<'a> Resolver<'a> {
     pub fn resolve_stmt(&mut self, stmt: Statement, is_global: bool) -> HirStatement {
         match stmt {
             Statement::Let(let_stmt) => {
+                if is_global && let_stmt.expression.kind != ExpressionKind::Literal(_) {
+                    self.push_err(ResolverError::Expected { 
+                        span: (), expected: (), got: () 
+                    });
+                }
                 let expression = self.resolve_expression(let_stmt.expression);
                 HirStatement::Let(HirLetStatement {
                     pattern: self.resolve_pattern(let_stmt.pattern, is_global, Some(expression)),
