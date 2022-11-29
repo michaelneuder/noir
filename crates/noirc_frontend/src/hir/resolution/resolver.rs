@@ -490,10 +490,16 @@ impl<'a> Resolver<'a> {
     pub fn resolve_stmt(&mut self, stmt: Statement, is_global: bool) -> HirStatement {
         match stmt {
             Statement::Let(let_stmt) => {
-                if is_global && let_stmt.expression.kind != ExpressionKind::Literal(_) {
-                    self.push_err(ResolverError::Expected { 
-                        span: (), expected: (), got: () 
-                    });
+                if is_global {
+                    match &let_stmt.expression.kind {
+                        ExpressionKind::Literal(_) => {},
+                        _ => {
+                            let test_span = Span::new(3..5);
+                            self.push_err(ResolverError::InvalidArrayLengthExpr { 
+                                span: test_span,
+                            });
+                        },
+                    };
                 }
                 let expression = self.resolve_expression(let_stmt.expression);
                 HirStatement::Let(HirLetStatement {
