@@ -492,12 +492,17 @@ impl<'a> Resolver<'a> {
             Statement::Let(let_stmt) => {
                 if is_global {
                     match &let_stmt.expression.kind {
-                        ExpressionKind::Literal(_) => {},
+                        ExpressionKind::Literal(_) => {
+                            print!("*** 1\n");
+                        },
                         _ => {
+                            print!("*** 2\n");
+                            print!("{:?}\n", self.errors);
                             let test_span = Span::new(3..5);
                             self.push_err(ResolverError::InvalidArrayLengthExpr { 
                                 span: test_span,
                             });
+                            print!("{:?}\n", self.errors);
                         },
                     };
                 }
