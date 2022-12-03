@@ -78,7 +78,7 @@ fn global_declaration() -> impl NoirParser<TopLevelStatement> {
     );
     let p = then_commit(p, global_type_annotation());
     let p = then_commit_ignore(p, just(Token::Assign));
-    let p = then_commit(p, literal().map_with_span(Expression::new)); // XXX: this should be a literal
+    let p = then_commit(p, expression()); 
     p.map(LetStatement::new_let).map(TopLevelStatement::Global)
 }
 
@@ -257,7 +257,9 @@ fn check_statements_require_semicolon(
     })
 }
 
-/// Parse an optional ': type' and implicitly add a 'comptime' to the type
+/// Parse an optional ': type' and implicitly add a 'comptime' to the type. 
+/// For array types, we do not need to add the 'comptime' attribute, because
+/// they are static.
 fn global_type_annotation() -> impl NoirParser<UnresolvedType> {
     ignore_then_commit(just(Token::Colon), parse_type())
         .map(|r#type| match r#type {
@@ -266,6 +268,7 @@ fn global_type_annotation() -> impl NoirParser<UnresolvedType> {
             UnresolvedType::Integer(_, sign, size) => {
                 UnresolvedType::Integer(Comptime::Yes(None), sign, size)
             }
+            UnresolvedType::Array(size, elem) => UnresolvedType::Array(size, elem),
             other => other,
         })
         .or_not()
