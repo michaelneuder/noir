@@ -491,27 +491,30 @@ impl<'a> Resolver<'a> {
         match stmt {
             Statement::Let(let_stmt) => {
                 if is_global {
-                    match &let_stmt.expression.kind {
+                    let globlal_stmt = match &let_stmt.expression.kind {
                         ExpressionKind::Literal(_) => {
                             print!("*** 1\n");
+                            let expression = self.resolve_expression(let_stmt.expression);
+                            HirStatement::Let(HirLetStatement {
+                                pattern: self.resolve_pattern(let_stmt.pattern, is_global, Some(expression)),
+                                r#type: self.resolve_type(let_stmt.r#type),
+                                expression,
+                            })
                         },
                         _ => {
                             print!("*** 2\n");
-                            print!("{:?}\n", self.errors);
-                            let test_span = Span::new(3..5);
-                            self.push_err(ResolverError::InvalidArrayLengthExpr { 
-                                span: test_span,
-                            });
-                            print!("{:?}\n", self.errors);
+                            HirStatement::Error
                         },
                     };
+                    globlal_stmt
+                } else {
+                    let expression = self.resolve_expression(let_stmt.expression);
+                    HirStatement::Let(HirLetStatement {
+                        pattern: self.resolve_pattern(let_stmt.pattern, is_global, Some(expression)),
+                        r#type: self.resolve_type(let_stmt.r#type),
+                        expression,
+                    })
                 }
-                let expression = self.resolve_expression(let_stmt.expression);
-                HirStatement::Let(HirLetStatement {
-                    pattern: self.resolve_pattern(let_stmt.pattern, is_global, Some(expression)),
-                    r#type: self.resolve_type(let_stmt.r#type),
-                    expression,
-                })
             }
             Statement::Constrain(constrain_stmt) => {
                 let expr_id = self.resolve_expression(constrain_stmt.0);
