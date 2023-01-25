@@ -478,24 +478,29 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    pub fn resolve_global_let(&mut self, let_stmt: crate::LetStatement) -> HirStatement {
+    pub fn resolve_global_let(
+        &mut self, 
+        let_stmt: crate::LetStatement
+    ) -> (HirStatement, Vec<ResolverError>) {
         match let_stmt.expression.kind {
             ExpressionKind::Literal(_) => {
+                print!("*** 1\n");
                 let expression = self.resolve_expression(let_stmt.expression);
                 let definition = DefinitionKind::Global(expression);
-                HirStatement::Let(HirLetStatement {
+                (HirStatement::Let(HirLetStatement {
                     pattern: self.resolve_pattern(let_stmt.pattern, definition),
                     r#type: self.resolve_type(let_stmt.r#type),
                     expression,
-                })
+                }), self.errors)
             }
             _ => {
+                print!("*** 2\n");
                 self.push_err(ResolverError::Expected { 
                     span: let_stmt.expression.span, 
                     expected: "globals can only be array, bool, integer or field literals".to_owned(), 
                     got: let_stmt.expression.kind.to_string(),
                 });
-                HirStatement::Error
+                (HirStatement::Error, self.errors)
             }
         }
     }

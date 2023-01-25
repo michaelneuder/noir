@@ -150,7 +150,7 @@ impl DefCollector {
 
         // We must first resolve and intern the globals before we can resolve any stmts inside each function.
         // Each function uses its own resolver with a newly created ScopeForest, and must be resolved again to be within a function's scope
-        let file_global_ids = resolve_globals(context, def_collector.collected_globals, crate_id);
+        let file_global_ids = resolve_globals(context, def_collector.collected_globals, crate_id, errors);
 
         resolve_structs(context, def_collector.collected_types, crate_id, errors);
 
@@ -241,6 +241,7 @@ fn resolve_globals(
     context: &mut Context,
     globals: Vec<UnresolvedGlobal>,
     crate_id: CrateId,
+    errors: &mut Vec<CollectedErrors>,
 ) -> Vec<(FileId, StmtId)> {
     let mut global_ids = Vec::new();
 
@@ -257,7 +258,13 @@ fn resolve_globals(
 
         let name = global.stmt_def.pattern.name_ident().clone();
 
-        let hir_stmt = resolver.resolve_global_let(global.stmt_def);
+        let (hir_stmt, errs) = resolver.resolve_global_let(global.stmt_def);
+        if !errs.is_empty() {
+            errors.push(CollectedErrors {
+                file_id: global.file_id,
+                errors: vecmap(errs, |err| err.into_diagnostic()),
+            })
+        }
 
         context.def_interner.update_global(global.stmt_id, hir_stmt);
 
