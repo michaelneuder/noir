@@ -479,22 +479,82 @@ impl<'a> Resolver<'a> {
     }
 
     pub fn resolve_global_let(
-        &mut self, 
+        mut self, 
         let_stmt: crate::LetStatement
     ) -> (HirStatement, Vec<ResolverError>) {
-        match let_stmt.expression.kind {
-            ExpressionKind::Literal(_) => {
-                print!("*** 1\n");
-                let expression = self.resolve_expression(let_stmt.expression);
-                let definition = DefinitionKind::Global(expression);
-                (HirStatement::Let(HirLetStatement {
-                    pattern: self.resolve_pattern(let_stmt.pattern, definition),
-                    r#type: self.resolve_type(let_stmt.r#type),
-                    expression,
-                }), self.errors)
+        match let_stmt.expression.kind.clone() {
+            // Ensure it is a literal.
+            ExpressionKind::Literal(literal) => {
+                // If it is a literal array, check the elements are literals themselves.
+                match literal.clone() {
+                    // Check each element of a standard array.
+                    Literal::Array(ArrayLiteral::Standard(elems)) => {
+                        let mut type_error = false;
+                        for e in elems.iter() {
+                            match e.kind {
+                                ExpressionKind::Literal(_) => {}
+                                // This element is not a literal.
+                                _ => {
+                                    type_error = true;
+                                    self.push_err(ResolverError::Expected { 
+                                        span: let_stmt.expression.span, 
+                                        expected: "global array elements can only be array, bool, integer or field literals".to_owned(), 
+                                        got: e.kind.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                        if type_error {
+                            return (HirStatement::Error, self.errors)
+                        }
+                        let expression = self.resolve_expression(let_stmt.expression);
+                        let definition = DefinitionKind::Global(expression);
+                        let hir_statement = HirStatement::Let(HirLetStatement {
+                            pattern: self.resolve_pattern(let_stmt.pattern, definition),
+                            r#type: self.resolve_type(let_stmt.r#type),
+                            expression,
+                        });
+                        (hir_statement, self.errors)
+                    }
+                    // Just check the type of the repeated element.
+                    Literal::Array(ArrayLiteral::Repeated { repeated_element, length: _}) => {
+                        match repeated_element.kind {
+                            ExpressionKind::Literal(_) => {
+                                let expression = self.resolve_expression(let_stmt.expression);
+                                let definition = DefinitionKind::Global(expression);
+                                let hir_statement = HirStatement::Let(HirLetStatement {
+                                    pattern: self.resolve_pattern(let_stmt.pattern, definition),
+                                    r#type: self.resolve_type(let_stmt.r#type),
+                                    expression,
+                                });
+                                (hir_statement, self.errors)
+                            }
+                            // Repeated type is not a literal.
+                            _ => {
+                                self.push_err(ResolverError::Expected { 
+                                    span: let_stmt.expression.span, 
+                                    expected: "global array elements can only be array, bool, integer or field literals".to_owned(), 
+                                    got: repeated_element.kind.to_string(),
+                                });
+                                (HirStatement::Error, self.errors)
+                            }
+                        }
+                    }
+                    // Non-array literal is OK.
+                    _ => {
+                        let expression = self.resolve_expression(let_stmt.expression);
+                        let definition = DefinitionKind::Global(expression);
+                        let hir_statement = HirStatement::Let(HirLetStatement {
+                            pattern: self.resolve_pattern(let_stmt.pattern, definition),
+                            r#type: self.resolve_type(let_stmt.r#type),
+                            expression,
+                        });
+                        (hir_statement, self.errors)
+                    }
+                }
             }
+            // Not a literal.
             _ => {
-                print!("*** 2\n");
                 self.push_err(ResolverError::Expected { 
                     span: let_stmt.expression.span, 
                     expected: "globals can only be array, bool, integer or field literals".to_owned(), 
