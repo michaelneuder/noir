@@ -478,6 +478,20 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    pub fn resolve_literal(
+        mut self, 
+        let_stmt: crate::LetStatement
+    ) -> (HirStatement, Vec<ResolverError>) {
+        let expression = self.resolve_expression(let_stmt.expression);
+        let definition = DefinitionKind::Global(expression);
+        let hir_statement = HirStatement::Let(HirLetStatement {
+            pattern: self.resolve_pattern(let_stmt.pattern, definition),
+            r#type: self.resolve_type(let_stmt.r#type),
+            expression,
+        });
+        (hir_statement, self.errors)
+    }
+
     pub fn resolve_global_let(
         mut self, 
         let_stmt: crate::LetStatement
@@ -486,13 +500,13 @@ impl<'a> Resolver<'a> {
             // Ensure it is a literal.
             ExpressionKind::Literal(literal) => {
                 // If it is a literal array, check the elements are literals themselves.
-                match literal.clone() {
+                match literal {
                     // Check each element of a standard array.
                     Literal::Array(ArrayLiteral::Standard(elems)) => {
                         let mut type_error = false;
                         for e in elems.iter() {
                             match e.kind {
-                                ExpressionKind::Literal(_) => {}
+                                ExpressionKind::Literal(_) => (),
                                 // This element is not a literal.
                                 _ => {
                                     type_error = true;
@@ -507,27 +521,13 @@ impl<'a> Resolver<'a> {
                         if type_error {
                             return (HirStatement::Error, self.errors)
                         }
-                        let expression = self.resolve_expression(let_stmt.expression);
-                        let definition = DefinitionKind::Global(expression);
-                        let hir_statement = HirStatement::Let(HirLetStatement {
-                            pattern: self.resolve_pattern(let_stmt.pattern, definition),
-                            r#type: self.resolve_type(let_stmt.r#type),
-                            expression,
-                        });
-                        (hir_statement, self.errors)
+                        self.resolve_literal(let_stmt)
                     }
                     // Just check the type of the repeated element.
                     Literal::Array(ArrayLiteral::Repeated { repeated_element, length: _}) => {
                         match repeated_element.kind {
                             ExpressionKind::Literal(_) => {
-                                let expression = self.resolve_expression(let_stmt.expression);
-                                let definition = DefinitionKind::Global(expression);
-                                let hir_statement = HirStatement::Let(HirLetStatement {
-                                    pattern: self.resolve_pattern(let_stmt.pattern, definition),
-                                    r#type: self.resolve_type(let_stmt.r#type),
-                                    expression,
-                                });
-                                (hir_statement, self.errors)
+                                self.resolve_literal(let_stmt)
                             }
                             // Repeated type is not a literal.
                             _ => {
@@ -542,14 +542,7 @@ impl<'a> Resolver<'a> {
                     }
                     // Non-array literal is OK.
                     _ => {
-                        let expression = self.resolve_expression(let_stmt.expression);
-                        let definition = DefinitionKind::Global(expression);
-                        let hir_statement = HirStatement::Let(HirLetStatement {
-                            pattern: self.resolve_pattern(let_stmt.pattern, definition),
-                            r#type: self.resolve_type(let_stmt.r#type),
-                            expression,
-                        });
-                        (hir_statement, self.errors)
+                        self.resolve_literal(let_stmt)
                     }
                 }
             }
