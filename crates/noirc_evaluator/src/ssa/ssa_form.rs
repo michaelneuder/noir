@@ -1,15 +1,13 @@
+use crate::ssa::{
+    block::BlockId,
+    context::SsaContext,
+    node::{Mark, NodeId, Operation},
+    {block, node},
+};
 use std::collections::HashSet;
 
-use crate::ssa::node::{Mark, Operation};
-
-use super::{
-    block::{self, BlockId},
-    context::SsaContext,
-    node::{self, NodeId},
-};
-
 // create phi arguments from the predecessors of the block (containing phi)
-pub fn write_phi(ctx: &mut SsaContext, predecessors: &[BlockId], var: NodeId, phi: NodeId) {
+fn write_phi(ctx: &mut SsaContext, predecessors: &[BlockId], var: NodeId, phi: NodeId) {
     let mut result = Vec::new();
     for b in predecessors {
         let v = get_current_value_in_block(ctx, var, *b);
@@ -56,7 +54,7 @@ pub fn seal_block(ctx: &mut SsaContext, block_id: BlockId, entry_block: BlockId)
 }
 
 // write dummy store for join block
-pub fn add_dummy_store(ctx: &mut SsaContext, entry: BlockId, join: BlockId) {
+fn add_dummy_store(ctx: &mut SsaContext, entry: BlockId, join: BlockId) {
     //retrieve modified arrays
     let mut modified = HashSet::new();
     if entry == join {
@@ -75,8 +73,8 @@ pub fn add_dummy_store(ctx: &mut SsaContext, entry: BlockId, join: BlockId) {
     }
 }
 
-//look-up recursiverly into predecessors
-pub fn get_block_value(ctx: &mut SsaContext, root: NodeId, block_id: BlockId) -> NodeId {
+//look-up recursively into predecessors
+fn get_block_value(ctx: &mut SsaContext, root: NodeId, block_id: BlockId) -> NodeId {
     let result = if !ctx.sealed_blocks.contains(&block_id) {
         //incomplete CFG
         ctx.generate_empty_phi(block_id, root)
@@ -109,7 +107,7 @@ pub fn get_current_value_in_block(
     var_id: NodeId,
     block_id: BlockId,
 ) -> NodeId {
-    let root = ctx.get_root_value(var_id);
+    let root = ctx.root_value(var_id);
 
     ctx[block_id]
         .get_current_value(root) //Local value numbering

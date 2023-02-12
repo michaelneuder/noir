@@ -10,6 +10,7 @@ use crate::ast::Ident;
 use crate::graph::CrateId;
 use crate::hir::def_collector::dc_crate::UnresolvedStruct;
 use crate::hir::def_map::{LocalModuleId, ModuleId};
+use crate::hir::type_check::TypeCheckError;
 use crate::hir_def::stmt::HirLetStatement;
 use crate::hir_def::types::{StructType, Type};
 use crate::hir_def::{
@@ -123,7 +124,6 @@ enum Node {
     Expression(HirExpression),
 }
 
-#[derive(Debug, Clone)]
 pub struct NodeInterner {
     nodes: Arena<Node>,
     func_meta: HashMap<FuncId, FuncMeta>,
@@ -152,8 +152,8 @@ pub struct NodeInterner {
     structs: HashMap<StructId, Shared<StructType>>,
 
     /// Map from ExprId (referring to a Function/Method call) to its corresponding TypeBindings,
-    /// filled out during type checking from instantiated variables. Used during monomorphisation
-    /// to map callsite types back onto function parameter types, and undo this binding as needed.
+    /// filled out during type checking from instantiated variables. Used during monomorphization
+    /// to map call site types back onto function parameter types, and undo this binding as needed.
     instantiation_bindings: HashMap<ExprId, TypeBindings>,
 
     /// Remembers the field index a given HirMemberAccess expression was resolved to during type
@@ -166,7 +166,16 @@ pub struct NodeInterner {
 
     //used for fallback mechanism
     language: Language,
+
+    delayed_type_checks: Vec<TypeCheckFn>,
+
+    // A map from a struct type and method name to a function id for the method
+    // along with any generic on the struct it may require. E.g. if the impl is
+    // only for `impl Foo<String>` rather than all Foo, the generics will be `vec![String]`.
+    struct_methods: HashMap<(StructId, String), (Vec<Type>, FuncId)>,
 }
+
+type TypeCheckFn = Box<dyn FnOnce() -> Result<(), TypeCheckError>>;
 
 #[derive(Debug, Clone)]
 pub struct DefinitionInfo {
@@ -230,6 +239,8 @@ impl Default for NodeInterner {
             next_type_variable_id: 0,
             globals: HashMap::new(),
             language: Language::R1CS,
+            delayed_type_checks: vec![],
+            struct_methods: HashMap::new(),
         };
 
         // An empty block expression is used often, we add this into the `node` on startup
@@ -548,11 +559,42 @@ impl NodeInterner {
 
     #[allow(deprecated)]
     pub fn foreign(&self, opcode: &str) -> bool {
-        let is_supported = acvm::default_is_blackbox_supported(self.language.clone());
+        let is_supported = acvm::default_is_black_box_supported(self.language.clone());
         let black_box_func = match acvm::acir::BlackBoxFunc::lookup(opcode) {
             Some(black_box_func) => black_box_func,
             None => return false,
         };
         is_supported(&black_box_func)
+    }
+
+    pub fn push_delayed_type_check(&mut self, f: TypeCheckFn) {
+        self.delayed_type_checks.push(f);
+    }
+
+    pub fn take_delayed_type_check_functions(&mut self) -> Vec<TypeCheckFn> {
+        std::mem::take(&mut self.delayed_type_checks)
+    }
+
+    /// Add a method to a type.
+    /// This will panic for non-struct types currently as we do not support methods
+    /// for primitives. We could allow this in the future however.
+    pub fn add_method(
+        &mut self,
+        self_type: &Type,
+        method_name: String,
+        method_id: FuncId,
+    ) -> Option<FuncId> {
+        match self_type {
+            Type::Struct(struct_type, generics) => {
+                let key = (struct_type.borrow().id, method_name);
+                self.struct_methods.insert(key, (generics.clone(), method_id)).map(|(_, id)| id)
+            }
+            other => unreachable!("Tried adding method to non-struct type '{}'", other),
+        }
+    }
+
+    /// Search by name for a method on the given struct
+    pub fn lookup_method(&self, id: StructId, method_name: &str) -> Option<FuncId> {
+        self.struct_methods.get(&(id, method_name.to_owned())).map(|(_, id)| *id)
     }
 }

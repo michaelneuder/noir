@@ -1,4 +1,5 @@
-use std::{collections::BTreeMap, convert::TryInto};
+#![forbid(unsafe_code)]
+use std::{collections::BTreeMap, convert::TryInto, str};
 
 use acvm::FieldElement;
 use errors::AbiError;
@@ -47,6 +48,9 @@ pub enum AbiType {
         )]
         fields: BTreeMap<String, AbiType>,
     },
+    String {
+        length: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +85,7 @@ impl AbiType {
             AbiType::Field | AbiType::Integer { .. } | AbiType::Boolean => 1,
             AbiType::Array { length, typ: _ } => *length as usize,
             AbiType::Struct { fields, .. } => fields.len(),
+            AbiType::String { length } => *length as usize,
         }
     }
 
@@ -92,6 +97,7 @@ impl AbiType {
             AbiType::Struct { fields, .. } => {
                 fields.iter().fold(0, |acc, (_, field_type)| acc + field_type.field_count())
             }
+            AbiType::String { length } => *length as u32,
         }
     }
 }
@@ -130,6 +136,14 @@ impl Abi {
         self.parameters.iter().map(|param| param.typ.field_count()).sum()
     }
 
+    pub fn to_btree_map(&self) -> BTreeMap<String, AbiType> {
+        let mut map = BTreeMap::new();
+        for param in self.parameters.iter() {
+            map.insert(param.name.clone(), param.typ.clone());
+        }
+        map
+    }
+
     /// ABI with only the public parameters
     #[must_use]
     pub fn public_abi(self) -> Abi {
@@ -142,12 +156,24 @@ impl Abi {
     pub fn encode(
         self,
         inputs: &BTreeMap<String, InputValue>,
-        allow_undefined_return: bool,
+        skip_output: bool,
     ) -> Result<Vec<FieldElement>, AbiError> {
-        let param_names = self.parameter_names();
+        // Condition that specifies whether we should filter the "return"
+        // parameter. We do this in the case that it is not in the `inputs`
+        // map specified.
+        //
+        // See Issue #645 : Adding a `public outputs` field into acir and
+        // the ABI will clean up this logic
+        // For prosperity; the prover does not know about a `return` value
+        // so we skip this when encoding the ABI
+        let return_condition =
+            |param_name: &&String| !skip_output || (param_name != &MAIN_RETURN_NAME);
+
+        let parameters = self.parameters.iter().filter(|param| return_condition(&&param.name));
+        let param_names: Vec<&String> = parameters.clone().map(|param| &param.name).collect();
         let mut encoded_inputs = Vec::new();
 
-        for param in self.parameters.iter() {
+        for param in parameters {
             let value = inputs
                 .get(&param.name)
                 .ok_or_else(|| AbiError::MissingParam(param.name.to_owned()))?
@@ -155,26 +181,6 @@ impl Abi {
 
             if !value.matches_abi(&param.typ) {
                 return Err(AbiError::TypeMismatch { param: param.to_owned(), value });
-            }
-
-            // As the circuit calculates the return value in the process of calculating rest of the witnesses
-            // it's not absolutely necessary to provide them as inputs. We then tolerate an undefined value for
-            // the return value input and just skip it.
-            if allow_undefined_return
-                && param.name == MAIN_RETURN_NAME
-                && matches!(value, InputValue::Undefined)
-            {
-                let return_witness_len = param.typ.field_count();
-
-                // We do not support undefined arrays for now - TODO
-                if return_witness_len != 1 {
-                    return Err(AbiError::Generic(
-                        "Values of array returned from main must be specified".to_string(),
-                    ));
-                } else {
-                    // This assumes that the return value is at the end of the ABI, otherwise values will be misaligned.
-                    continue;
-                }
             }
 
             encoded_inputs.extend(Self::encode_value(value, &param.name)?);
@@ -196,6 +202,11 @@ impl Abi {
         match value {
             InputValue::Field(elem) => encoded_value.push(elem),
             InputValue::Vec(vec_elem) => encoded_value.extend(vec_elem),
+            InputValue::String(string) => {
+                let str_as_fields =
+                    string.bytes().map(|byte| FieldElement::from_be_bytes_reduce(&[byte]));
+                encoded_value.extend(str_as_fields)
+            }
             InputValue::Struct(object) => {
                 for (field_name, value) in object {
                     let new_name = format!("{param_name}.{field_name}");
@@ -210,7 +221,7 @@ impl Abi {
     /// Decode a vector of `FieldElements` into the types specified in the ABI.
     pub fn decode(
         &self,
-        encoded_inputs: &Vec<FieldElement>,
+        encoded_inputs: &[FieldElement],
     ) -> Result<BTreeMap<String, InputValue>, AbiError> {
         let input_length: u32 = encoded_inputs.len().try_into().unwrap();
         if input_length != self.field_count() {
@@ -220,55 +231,62 @@ impl Abi {
             });
         }
 
-        let mut index = 0;
+        let mut field_iterator = encoded_inputs.iter().cloned();
         let mut decoded_inputs = BTreeMap::new();
-
         for param in &self.parameters {
-            let (next_index, decoded_value) =
-                Self::decode_value(index, encoded_inputs, &param.typ)?;
+            let decoded_value = Self::decode_value(&mut field_iterator, &param.typ)?;
 
             decoded_inputs.insert(param.name.to_owned(), decoded_value);
-
-            index = next_index;
         }
         Ok(decoded_inputs)
     }
 
     fn decode_value(
-        initial_index: usize,
-        encoded_inputs: &Vec<FieldElement>,
+        field_iterator: &mut impl Iterator<Item = FieldElement>,
         value_type: &AbiType,
-    ) -> Result<(usize, InputValue), AbiError> {
-        let mut index = initial_index;
-
+    ) -> Result<InputValue, AbiError> {
+        // This function assumes that `field_iterator` contains enough `FieldElement`s in order to decode a `value_type`
+        // `Abi.decode` enforces that the encoded inputs matches the expected length defined by the ABI so this is safe.
         let value = match value_type {
             AbiType::Field | AbiType::Integer { .. } | AbiType::Boolean => {
-                let field_element = encoded_inputs[index];
-                index += 1;
+                let field_element = field_iterator.next().unwrap();
 
                 InputValue::Field(field_element)
             }
             AbiType::Array { length, .. } => {
-                let field_elements = &encoded_inputs[index..index + (*length as usize)];
+                let field_elements: Vec<FieldElement> =
+                    field_iterator.take(*length as usize).collect();
 
-                index += *length as usize;
-                InputValue::Vec(field_elements.to_vec())
+                InputValue::Vec(field_elements)
+            }
+            AbiType::String { length } => {
+                let string_as_slice: Vec<u8> = field_iterator
+                    .take(*length as usize)
+                    .map(|e| {
+                        let mut field_as_bytes = e.to_be_bytes();
+                        let char_byte = field_as_bytes.pop().unwrap(); // A character in a string is represented by a u8, thus we just want the last byte of the element
+                        assert!(field_as_bytes.into_iter().all(|b| b == 0)); // Assert that the rest of the field element's bytes are empty
+                        char_byte
+                    })
+                    .collect();
+
+                let final_string = str::from_utf8(&string_as_slice).unwrap();
+
+                InputValue::String(final_string.to_owned())
             }
             AbiType::Struct { fields, .. } => {
                 let mut struct_map = BTreeMap::new();
 
                 for (field_key, param_type) in fields {
-                    let (next_index, field_value) =
-                        Self::decode_value(index, encoded_inputs, param_type)?;
+                    let field_value = Self::decode_value(field_iterator, param_type)?;
 
                     struct_map.insert(field_key.to_owned(), field_value);
-                    index = next_index;
                 }
 
                 InputValue::Struct(struct_map)
             }
         };
 
-        Ok((index, value))
+        Ok(value)
     }
 }

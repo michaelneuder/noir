@@ -1,27 +1,18 @@
-use std::collections::{hash_map::Entry, HashMap};
-
-use noirc_frontend::monomorphisation::ast::FuncId;
-
-use crate::{
-    errors::RuntimeError,
-    ssa::{
-        node::{Node, Operation},
-        optim,
-    },
-};
-
-use super::{
-    block::{self, BlockId},
+use crate::errors::RuntimeError;
+use crate::ssa::{
+    block::BlockId,
     conditional::DecisionTree,
     context::SsaContext,
-    function,
     mem::{ArrayId, Memory},
-    node::{self, Instruction, Mark, NodeId, ObjectType},
+    node::{Instruction, Mark, Node, NodeId, ObjectType, Operation},
+    {block, function, node, optimizations},
 };
+use noirc_frontend::monomorphization::ast::FuncId;
+use std::collections::{hash_map::Entry, HashMap};
 
 // Number of allowed times for inlining function calls inside a code block.
 // If a function calls another function, the inlining of the first function will leave the second function call that needs to be inlined as well.
-// In case of recursive calls, this iterative inlining does not end so we arbitraty limit it. 100 nested calls should already support very complex programs.
+// In case of recursive calls, this iterative inlining does not end so we arbitrarily limit it. 100 nested calls should already support very complex programs.
 const MAX_INLINE_TRIES: u32 = 100;
 
 //inline main
@@ -48,7 +39,7 @@ pub fn inline_cfg(
     to_inline: Option<FuncId>,
 ) -> Result<bool, RuntimeError> {
     let mut result = true;
-    let func = ctx.get_ssafunc(func_id).unwrap();
+    let func = ctx.ssa_func(func_id).unwrap();
     let func_cfg = block::bfs(func.entry_block, None, ctx);
     let decision = func.decision.clone();
     for block_id in func_cfg {
@@ -71,7 +62,7 @@ fn inline_block(
         if let Some(ins) = ctx.try_get_instruction(*i) {
             if !ins.is_deleted() {
                 if let Operation::Call { func, arguments, returned_arrays, .. } = &ins.operation {
-                    if to_inline.is_none() || to_inline == ctx.try_get_funcid(*func) {
+                    if to_inline.is_none() || to_inline == ctx.try_get_func_id(*func) {
                         call_ins.push((
                             ins.id,
                             *func,
@@ -86,8 +77,8 @@ fn inline_block(
     }
     let mut result = true;
     for (ins_id, f, args, arrays, parent_block) in call_ins {
-        if let Some(func_id) = ctx.try_get_funcid(f) {
-            let f_copy = ctx.get_ssafunc(func_id).unwrap().clone();
+        if let Some(func_id) = ctx.try_get_func_id(f) {
+            let f_copy = ctx.ssa_func(func_id).unwrap().clone();
             if !inline(ctx, &f_copy, &args, &arrays, parent_block, ins_id, decision)? {
                 result = false;
             }
@@ -95,7 +86,7 @@ fn inline_block(
     }
 
     if to_inline.is_none() {
-        optim::simple_cse(ctx, block_id)?;
+        optimizations::simple_cse(ctx, block_id)?;
     }
     Ok(result)
 }
@@ -107,6 +98,7 @@ pub struct StackFrame {
     pub created_arrays: HashMap<ArrayId, BlockId>,
     zeros: HashMap<ObjectType, NodeId>,
     pub return_arrays: Vec<ArrayId>,
+    lca_cache: HashMap<(BlockId, BlockId), BlockId>,
 }
 
 impl StackFrame {
@@ -118,6 +110,7 @@ impl StackFrame {
             created_arrays: HashMap::new(),
             zeros: HashMap::new(),
             return_arrays: Vec::new(),
+            lca_cache: HashMap::new(),
         }
     }
 
@@ -125,6 +118,7 @@ impl StackFrame {
         self.stack.clear();
         self.array_map.clear();
         self.created_arrays.clear();
+        self.lca_cache.clear();
     }
 
     pub fn push(&mut self, ins_id: NodeId) {
@@ -161,13 +155,37 @@ impl StackFrame {
     pub fn get_zero(&self, o_type: ObjectType) -> NodeId {
         self.zeros[&o_type]
     }
+
+    // returns the lca of x and y, using a cache
+    pub fn lca(&mut self, ctx: &SsaContext, x: BlockId, y: BlockId) -> BlockId {
+        let ordered_blocks = if x.0 < y.0 { (x, y) } else { (y, x) };
+        *self.lca_cache.entry(ordered_blocks).or_insert_with(|| block::lca(ctx, x, y))
+    }
+
+    // returns true if the array_id is created in the block of the stack
+    pub fn is_new_array(&mut self, ctx: &SsaContext, array_id: &ArrayId) -> bool {
+        if self.return_arrays.contains(array_id) {
+            //array is defined by the caller
+            return false;
+        }
+        if self.created_arrays[array_id] != self.block {
+            let lca = self.lca(ctx, self.block, self.created_arrays[array_id]);
+            if lca != self.block && lca != self.created_arrays[array_id] {
+                //if the array is defined in a parallel branch, it is new in this branch
+                return true;
+            }
+            false
+        } else {
+            true
+        }
+    }
 }
 
 //inline a function call
 //Return false if the inlined function performs a function call
 pub fn inline(
     ctx: &mut SsaContext,
-    ssa_func: &function::SSAFunction,
+    ssa_func: &function::SsaFunction,
     args: &[NodeId],
     arrays: &[(ArrayId, u32)],
     block: BlockId,
@@ -191,8 +209,8 @@ pub fn inline(
     //2. by copy parameters:
     for (&arg_caller, &arg_function) in args.iter().zip(&func_arg) {
         //pass by-ref const array arguments
-        if let node::ObjectType::Pointer(x) = ctx.get_object_type(arg_function.0) {
-            if let node::ObjectType::Pointer(y) = ctx.get_object_type(arg_caller) {
+        if let node::ObjectType::Pointer(x) = ctx.object_type(arg_function.0) {
+            if let node::ObjectType::Pointer(y) = ctx.object_type(arg_caller) {
                 if !arg_function.1 && !stack_frame.array_map.contains_key(&x) {
                     stack_frame.array_map.insert(x, y);
                     continue;
@@ -203,7 +221,7 @@ pub fn inline(
     }
 
     let mut result = true;
-    //3. inline in the block: we assume the function cfg is already flatened.
+    //3. inline in the block: we assume the function cfg is already flattened.
     let mut next_block = Some(ssa_func.entry_block);
     while let Some(next_b) = next_block {
         let mut nested_call = false;
@@ -236,12 +254,11 @@ pub fn inline_in_block(
     let block_func = &ctx[block_id];
     let next_block = block_func.left;
     let block_func_instructions = &block_func.instructions.clone();
-    let predicate =
-        if let Operation::Call { predicate, .. } = &ctx.get_instruction(call_id).operation {
-            *predicate
-        } else {
-            unreachable!("invalid call id");
-        };
+    let predicate = if let Operation::Call { predicate, .. } = &ctx.instruction(call_id).operation {
+        *predicate
+    } else {
+        unreachable!("invalid call id");
+    };
     let mut short_circuit = false;
 
     *nested_call = false;
@@ -277,7 +294,7 @@ pub fn inline_in_block(
                             result.mark = Mark::ReplaceWith(*value);
                         }
                     }
-                    let call_ins = ctx.get_mut_instruction(call_id);
+                    let call_ins = ctx.instruction_mut(call_id);
                     call_ins.mark = Mark::Deleted;
                 }
                 Operation::Call { .. } => {
@@ -287,7 +304,6 @@ pub fn inline_in_block(
                 }
                 Operation::Load { array_id, index } => {
                     //Compute the new address:
-                    //TODO use relative addressing, but that requires a few changes, mainly in acir_gen.rs and integer.rs
                     let b = stack_frame.get_or_default(*array_id);
                     let mut new_ins = Instruction::new(
                         Operation::Load { array_id: b, index: *index },
@@ -317,7 +333,7 @@ pub fn inline_in_block(
                         new_ins.res_type = node::ObjectType::Pointer(new_id);
                     }
 
-                    let err = optim::simplify(ctx, &mut new_ins);
+                    let err = optimizations::simplify(ctx, &mut new_ins);
                     if err.is_err() {
                         //add predicate if under condition, else short-circuit the target block.
                         let ass_value = decision.get_assumption_value(predicate);
@@ -352,14 +368,19 @@ pub fn inline_in_block(
         }
     }
 
-    // we conditionalise the stack frame into a new stack frame (to avoid ownership issues)
+    // we apply the `condition` to stack frame and place it into a new stack frame (to avoid ownership issues)
     let mut stack2 = StackFrame::new(stack_frame.block);
     stack2.return_arrays = stack_frame.return_arrays.clone();
     if short_circuit {
         super::block::short_circuit_inline(ctx, stack_frame.block);
     } else {
-        decision.conditionalise_inline(ctx, &stack_frame.stack, &mut stack2, predicate)?;
-        // we add the conditionalised instructions to the target_block, at proper location (really need a linked list!)
+        decision.apply_condition_to_instructions(
+            ctx,
+            &stack_frame.stack,
+            &mut stack2,
+            predicate,
+        )?;
+        // we add the instructions which we have applied the conditions to, to the target_block, at proper location (really need a linked list!)
         stack2.apply(ctx, stack_frame.block, call_id, false);
     }
 
@@ -416,7 +437,7 @@ impl node::Operation {
                             return id;
                         }
                     }
-                    function::SSAFunction::get_mapped_value(Some(&id), ctx, inline_map, block_id)
+                    function::SsaFunction::get_mapped_value(Some(&id), ctx, inline_map, block_id)
                 });
             }
             //However we deliberately not use the default case to force review of the behavior if a new type of operation is added.
@@ -429,7 +450,7 @@ impl node::Operation {
             | Operation::Return(_) | Operation::Load {.. } | Operation::Store { .. } | Operation::Call { .. }
             => {
                 self.map_id_mut(|id| {
-                    function::SSAFunction::get_mapped_value(Some(&id), ctx, inline_map, block_id)
+                    function::SsaFunction::get_mapped_value(Some(&id), ctx, inline_map, block_id)
                 });
             }
         }

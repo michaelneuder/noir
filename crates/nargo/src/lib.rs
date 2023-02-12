@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use noirc_frontend::graph::CrateType;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,7 @@ fn nargo_crates() -> PathBuf {
 
 mod backends;
 pub mod cli;
+mod constants;
 mod errors;
 mod git;
 mod resolver;

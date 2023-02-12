@@ -1,15 +1,15 @@
+#![forbid(unsafe_code)]
 mod position;
-mod reporter;
-
+pub mod reporter;
 pub use position::{Location, Position, Span, Spanned};
-pub use reporter::*;
+pub use reporter::{CustomDiagnostic, DiagnosticKind};
 
-pub trait DiagnosableError {
-    fn to_diagnostic(&self) -> CustomDiagnostic;
-}
+/// Returned when the Reporter finishes after reporting errors
+#[derive(Copy, Clone)]
+pub struct ReportedError;
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct CollectedErrors {
+pub struct FileDiagnostic {
     pub file_id: fm::FileId,
-    pub errors: Vec<CustomDiagnostic>,
+    pub diagnostic: CustomDiagnostic,
 }

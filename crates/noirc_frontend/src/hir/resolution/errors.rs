@@ -1,8 +1,8 @@
-use noirc_errors::CustomDiagnostic as Diagnostic;
 pub use noirc_errors::Span;
+use noirc_errors::{CustomDiagnostic as Diagnostic, FileDiagnostic};
 use thiserror::Error;
 
-use crate::Ident;
+use crate::{Ident, Type};
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ResolverError {
@@ -38,14 +38,32 @@ pub enum ResolverError {
     InvalidArrayLengthExpr { span: Span },
     #[error("Integer too large to be evaluated in an array length context")]
     IntegerTooLarge { span: Span },
+    #[error("No global or generic type parameter found with the given name")]
+    NoSuchNumericTypeVariable { path: crate::Path },
+    #[error("Closures cannot capture mutable variables")]
+    CapturedMutableVariable { span: Span },
+    #[error("Test functions are not allowed to have any parameters")]
+    TestFunctionHasParameters { span: Span },
+    #[error("Only struct types can be used in constructor expressions")]
+    NonStructUsedInConstructor { typ: Type, span: Span },
+    #[error("Only struct types can have generics")]
+    NonStructWithGenerics { span: Span },
+    #[error("Cannot apply generics on Self type")]
+    GenericsOnSelfType { span: Span },
 }
 
 impl ResolverError {
+    pub fn into_file_diagnostic(self, file: fm::FileId) -> FileDiagnostic {
+        Diagnostic::from(self).in_file(file)
+    }
+}
+
+impl From<ResolverError> for Diagnostic {
     /// Only user errors can be transformed into a Diagnostic
     /// ICEs will make the compiler panic, as they could affect the
     /// soundness of the generated program
-    pub fn into_diagnostic(self) -> Diagnostic {
-        match self {
+    fn from(error: ResolverError) -> Diagnostic {
+        match error {
             ResolverError::DuplicateDefinition { name, first_span, second_span } => {
                 let mut diag = Diagnostic::simple_error(
                     format!("duplicate definitions of {name} found"),
@@ -185,6 +203,36 @@ impl ResolverError {
             ResolverError::IntegerTooLarge { span } => Diagnostic::simple_error(
                 "Integer too large to be evaluated to an array-length".into(),
                 "Array-lengths may be a maximum size of usize::MAX, including intermediate calculations".into(),
+                span,
+            ),
+            ResolverError::NoSuchNumericTypeVariable { path } => Diagnostic::simple_error(
+                format!("Cannot find a global or generic type parameter named `{path}`"),
+                "Only globals or generic type parameters are allowed to be used as an array type's length".to_string(),
+                path.span(),
+            ),
+            ResolverError::CapturedMutableVariable { span } => Diagnostic::simple_error(
+                "Closures cannot capture mutable variables".into(),
+                "Mutable variable".into(),
+                span,
+            ),
+            ResolverError::TestFunctionHasParameters { span } => Diagnostic::simple_error(
+                "Test functions cannot have any parameters".into(),
+                "Try removing the parameters or moving the test into a wrapper function".into(),
+                span,
+            ),
+            ResolverError::NonStructUsedInConstructor { typ, span } => Diagnostic::simple_error(
+                "Only struct types can be used in constructor expressions".into(),
+                format!("{} has no fields to construct it with", typ),
+                span,
+            ),
+            ResolverError::NonStructWithGenerics { span } => Diagnostic::simple_error(
+                "Only struct types can have generic arguments".into(),
+                "Try removing the generic arguments".into(),
+                span,
+            ),
+            ResolverError::GenericsOnSelfType { span } => Diagnostic::simple_error(
+                "Cannot apply generics to Self type".into(),
+                "Use an explicit type name or apply the generics at the start of the impl instead".into(),
                 span,
             ),
         }

@@ -129,8 +129,8 @@ pub enum Token {
     #[allow(clippy::upper_case_acronyms)]
     EOF,
 
-    // An invalid character is one that is not in noir's language or grammer.
-    // Delaying reporting these as errors until parsing improves error messsages
+    // An invalid character is one that is not in noir's language or grammar.
+    // Delaying reporting these as errors until parsing improves error messages
     Invalid(char),
 }
 
@@ -223,8 +223,40 @@ impl Token {
     pub(super) fn into_single_span(self, position: Position) -> SpannedToken {
         self.into_span(position, position)
     }
+
     pub(super) fn into_span(self, start: Position, end: Position) -> SpannedToken {
         SpannedToken(Spanned::from_position(start, end, self))
+    }
+
+    /// These are all the operators allowed as part of
+    /// a short-hand assignment: a <op>= b
+    pub fn assign_shorthand_operators() -> [Token; 10] {
+        use Token::*;
+        [Plus, Minus, Star, Slash, Percent, Ampersand, Caret, ShiftLeft, ShiftRight, Pipe]
+    }
+
+    pub fn try_into_binary_op(self, span: Span) -> Option<Spanned<crate::BinaryOpKind>> {
+        use crate::BinaryOpKind::*;
+        let binary_op = match self {
+            Token::Plus => Add,
+            Token::Ampersand => And,
+            Token::Caret => Xor,
+            Token::ShiftLeft => ShiftLeft,
+            Token::ShiftRight => ShiftRight,
+            Token::Pipe => Or,
+            Token::Minus => Subtract,
+            Token::Star => Multiply,
+            Token::Slash => Divide,
+            Token::Equal => Equal,
+            Token::NotEqual => NotEqual,
+            Token::Less => Less,
+            Token::LessEqual => LessEqual,
+            Token::Greater => Greater,
+            Token::GreaterEqual => GreaterEqual,
+            Token::Percent => Modulo,
+            _ => return None,
+        };
+        Some(Spanned::from(span, binary_op))
     }
 }
 
@@ -287,6 +319,7 @@ pub enum Attribute {
     Foreign(String),
     Builtin(String),
     Alternative(String),
+    Test,
 }
 
 impl fmt::Display for Attribute {
@@ -295,6 +328,7 @@ impl fmt::Display for Attribute {
             Attribute::Foreign(ref k) => write!(f, "#[foreign({k})]"),
             Attribute::Builtin(ref k) => write!(f, "#[builtin({k})]"),
             Attribute::Alternative(ref k) => write!(f, "#[alternative({k})]"),
+            Attribute::Test => write!(f, "#[test]"),
         }
     }
 }
@@ -309,7 +343,14 @@ impl Attribute {
             .collect();
 
         if word_segments.len() != 2 {
-            return Err(LexerErrorKind::MalformedFuncAttribute { span, found: word.to_owned() });
+            if word_segments.len() == 1 && word_segments[0] == "test" {
+                return Ok(Token::Attribute(Attribute::Test));
+            } else {
+                return Err(LexerErrorKind::MalformedFuncAttribute {
+                    span,
+                    found: word.to_owned(),
+                });
+            }
         }
 
         let attribute_type = word_segments[0];
@@ -328,21 +369,22 @@ impl Attribute {
 
     pub fn builtin(self) -> Option<String> {
         match self {
-            Attribute::Foreign(_) | Attribute::Alternative(_) => None,
             Attribute::Builtin(name) => Some(name),
+            _ => None,
         }
     }
 
     pub fn foreign(self) -> Option<String> {
         match self {
             Attribute::Foreign(name) => Some(name),
-            Attribute::Builtin(_) | Attribute::Alternative(_) => None,
+            _ => None,
         }
     }
 
     pub fn is_foreign(&self) -> bool {
         matches!(self, Attribute::Foreign(_))
     }
+
     pub fn is_low_level(&self) -> bool {
         matches!(self, Attribute::Foreign(_) | Attribute::Builtin(_))
     }
@@ -354,6 +396,7 @@ impl AsRef<str> for Attribute {
             Attribute::Foreign(string) => string,
             Attribute::Builtin(string) => string,
             Attribute::Alternative(string) => string,
+            Attribute::Test => "",
         }
     }
 }
@@ -363,7 +406,8 @@ impl AsRef<str> for Attribute {
 pub enum Keyword {
     As,
     Bool,
-    Comptime,
+    Char,
+    CompTime,
     Constrain,
     Crate,
     Dep,
@@ -379,6 +423,7 @@ pub enum Keyword {
     Mod,
     Mut,
     Pub,
+    String,
     Return,
     Struct,
     Use,
@@ -390,7 +435,8 @@ impl fmt::Display for Keyword {
         match *self {
             Keyword::As => write!(f, "as"),
             Keyword::Bool => write!(f, "bool"),
-            Keyword::Comptime => write!(f, "comptime"),
+            Keyword::Char => write!(f, "char"),
+            Keyword::CompTime => write!(f, "comptime"),
             Keyword::Constrain => write!(f, "constrain"),
             Keyword::Crate => write!(f, "crate"),
             Keyword::Dep => write!(f, "dep"),
@@ -406,6 +452,7 @@ impl fmt::Display for Keyword {
             Keyword::Mod => write!(f, "mod"),
             Keyword::Mut => write!(f, "mut"),
             Keyword::Pub => write!(f, "pub"),
+            Keyword::String => write!(f, "str"),
             Keyword::Return => write!(f, "return"),
             Keyword::Struct => write!(f, "struct"),
             Keyword::Use => write!(f, "use"),
@@ -422,7 +469,8 @@ impl Keyword {
         let keyword = match word {
             "as" => Keyword::As,
             "bool" => Keyword::Bool,
-            "comptime" => Keyword::Comptime,
+            "char" => Keyword::Char,
+            "comptime" => Keyword::CompTime,
             "constrain" => Keyword::Constrain,
             "crate" => Keyword::Crate,
             "dep" => Keyword::Dep,
@@ -438,6 +486,7 @@ impl Keyword {
             "mod" => Keyword::Mod,
             "mut" => Keyword::Mut,
             "pub" => Keyword::Pub,
+            "str" => Keyword::String,
             "return" => Keyword::Return,
             "struct" => Keyword::Struct,
             "use" => Keyword::Use,
